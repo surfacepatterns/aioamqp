@@ -13,8 +13,9 @@ from .version import __packagename__
 
 @asyncio.coroutine
 def connect(host='localhost', port=None, login='guest', password='guest',
-            virtualhost='/', ssl=False, login_method='AMQPLAIN', insist=False,
-            protocol_factory=AmqpProtocol, *, verify_ssl=True, loop=None, **kwargs):
+            virtualhost='/', ssl=False, server_hostname=None,
+            login_method='AMQPLAIN', insist=False,
+            protocol_factory=AmqpProtocol, *, loop=None, **kwargs):
     """Convenient method to connect to an AMQP broker
 
         @host:          the host to connect to
@@ -22,8 +23,12 @@ def connect(host='localhost', port=None, login='guest', password='guest',
         @login:         login
         @password:      password
         @virtualhost:   AMQP virtualhost to use for this connection
-        @ssl:           Create an SSL connection instead of a plain unencrypted one
-        @verify_ssl:    Verify server's SSL certificate (True by default)
+        @ssl:           Create an SSL connection instead of a plain
+                        unencrypted one.  Can also be the ssl.SSLContext
+                        instance you'd like used with the connection.
+        @server_hostname:
+                        Sets or overrides the hostname that the server's
+                        certificate will be matched against.
         @login_method:  AMQP auth method
         @insist:        Insist on connecting to a server
         @protocol_factory:
@@ -40,14 +45,15 @@ def connect(host='localhost', port=None, login='guest', password='guest',
 
     create_connection_kwargs = {}
 
+    if server_hostname is not None:
+        create_connection_kwargs['server_hostname'] = server_hostname
     if ssl:
-        if sys.version_info < (3, 4):
-            raise NotImplementedError('SSL not supported on Python 3.3 yet')
-        ssl_context = ssl_module.create_default_context()
-        if not verify_ssl:
-            ssl_context.check_hostname = False
-            ssl_context.verify_mode = ssl_module.CERT_NONE
-        create_connection_kwargs['ssl'] = ssl_context
+        if not isinstance(ssl, ssl_module.SSLContext):
+            if sys.version_info < (3, 4):
+                raise NotImplementedError(
+                    'SSL not supported on Python 3.3 yet')
+            ssl = ssl_module.create_default_context()
+        create_connection_kwargs['ssl'] = ssl
 
     if port is None:
         if ssl:
@@ -76,7 +82,7 @@ def connect(host='localhost', port=None, login='guest', password='guest',
 @asyncio.coroutine
 def from_url(
         url, login_method='AMQPLAIN', insist=False, protocol_factory=AmqpProtocol, *,
-        verify_ssl=True, **kwargs):
+        ssl=None, server_hostname=None, **kwargs):
     """ Connect to the AMQP using a single url parameter and return the client.
 
         For instance:
@@ -86,7 +92,11 @@ def from_url(
         @insist:        Insist on connecting to a server
         @protocol_factory:
                         Factory to use, if you need to subclass AmqpProtocol
-        @verify_ssl:    Verify server's SSL certificate (True by default)
+        @ssl:           Optional ssl.SSLContext instance, which is ignored if
+                        the URL scheme is 'amqp' (None by default)
+        @server_hostname:
+                        Sets or overrides the hostname that the server's
+                        certificate will be matched against.
         @loop:          optionally set the event loop to use.
 
         @kwargs:        Arguments to be given to the protocol_factory instance
@@ -95,7 +105,15 @@ def from_url(
     """
     url = urlparse(url)
 
-    if url.scheme not in ('amqp', 'amqps'):
+    scheme = url.scheme
+    if scheme == "amqp":
+        ssl = False
+    elif scheme == "amqps":
+        if ssl is None:
+            ssl = True
+        elif not isinstance(ssl, ssl_module.SSLContext):
+            raise TypeError("ssl")
+    else:
         raise ValueError('Invalid protocol %s, valid protocols are amqp or amqps' % url.scheme)
 
     transport, protocol = yield from connect(
@@ -104,10 +122,9 @@ def from_url(
         login=url.username or 'guest',
         password=url.password or 'guest',
         virtualhost=(url.path[1:] if len(url.path) > 1 else '/'),
-        ssl=(url.scheme == 'amqps'),
+        ssl=ssl,
         login_method=login_method,
         insist=insist,
         protocol_factory=protocol_factory,
-        verify_ssl=verify_ssl,
         **kwargs)
     return transport, protocol
